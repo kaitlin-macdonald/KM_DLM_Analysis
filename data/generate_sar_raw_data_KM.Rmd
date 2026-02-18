@@ -1,0 +1,556 @@
+---
+title: "SARforecastDLM"
+subtitle: "Code to generate sar_raw_data file"
+output: html_document
+date: "2025-01-13"
+---
+
+Objective: To generate the base data files for the SARforecastDLM package which include: 
+
+- `sar_raw_data.rda`: includes all years of sar per method and index in one file -- used to model (`mod_mainpage_fct_forecast_model.R`) based on user selected years of input to generate `mod_mainpage_fct_forecast_compare_plot.R`
+
+
+To update sar_raw_data, this script is setup up to call all new covariate data and then run through each SAR method to append into a single data file. Best to run in order-- will have to recode slighlty to update a single covariate/sar 
+
+```{r load_libraries}
+library(tidyverse)
+library(here)
+library(MARSS)
+library(rerddap) #import data from ERDDAP
+library(readxl) #import excel files--NCBI
+library(lubridate)
+```
+
+# Covariate data
+
+## Northern Copepod Biomass 
+- Years: 1997 to current
+```{r load_northern_copepod_biomass_data}
+
+#Northern copepod biomass data
+#NCBI<-read_csv(here("data-raw", "northern_copepod_biomass_newportOR.csv")) 
+
+url<-"https://www.fisheries.noaa.gov/s3/2023-10/TempOxyNoSo-10232023.xlsx"
+
+# Download the file to a temporary location
+temp_file <- tempfile(fileext = ".xlsx")
+download.file(url, temp_file, mode = "wb")
+
+ncbi_raw<-read_excel(temp_file)
+
+
+# Currently set to only pull April data but NOAA stoplight chart returns value for May - September. Future Research direction is attempting various month iterations.
+df_ncbi<-ncbi_raw %>% 
+  filter(Month == 4) %>% #select only april for now-- update with more research
+  group_by(Year) %>% 
+  summarise(value = mean(NORTHERN)) %>% 
+  select("year" = Year, value) %>% 
+  mutate(index = "NCBI")
+
+ggplot(df_ncbi, aes(x = year, y = value)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Northern Copepod Biomass",
+       x = "Year",
+       y = "Biomass (mg C m-3)[April]") +
+  theme_minimal()
+
+```
+
+## Index of Coastal Prey Biomass (ICPB) 
+
+- Years: 1998 to current
+- Indice is of Winter (January, February, March) Ichthyoplankton 
+
+- shared with JG via Elizabeth Daly - NOAA Affiliate see [Winter Ichthyoplankton via fisheries.noaa.gov](https://www.fisheries.noaa.gov/west-coast/science-data/2023-summary-ocean-ecosystem-indicators#winter-ichthyoplankton:~:text=at%20nearshore%20stations.-,Winter%20Ichthyoplankton,-The%202023%20winter). 
+
+- Data in-house 1998 to 2019, emailed for more up to date data and directed to NOAA Stoplight Table for up-to-date data.  
+
+- Since starts in 1998, will not include with SW SAR method, could look to older salmon prey biomass index (pre-ICPB). 
+
+```{r load_ICPB_data}
+#Northern copepod biomass data (in-house)
+# df_ICPB<-read_csv(here("data-raw", "IndexOfCoastalPreyBiomass.csv")) 
+ 
+#to pull directly from stoplight table 
+library(data.table)
+year <- 2024 #update most recent year
+url <- paste0("https://www.fisheries.noaa.gov/s3/2024-12/stoplight-raw-data-",year,".csv")
+raw_data<-fread(url, header = TRUE, check.names = FALSE)
+
+df_icpb<-raw_data %>% 
+  mutate(across(-1, as.numeric)) %>%
+  pivot_longer(-1, names_to = "year", values_to = "value") %>% 
+  filter(`Ecosystem Indicators` == "Nearshore Ichthyoplankton\nLog(mg C 1,000 m-3; Jan-Mar)") %>% 
+  select(year, value) %>% 
+  mutate(index = "ICPB") %>% 
+  mutate(year = as.integer(year))
+
+ggplot(df_icpb, aes(x = year, y = value)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Nearshore Ichthyoplankton",
+       x = "Year",
+       y = "Biomass (mg C m-3)[April]") +
+  theme_minimal()
+```
+
+## Coastal Upwelling Index (CUI)
+ - Years: 1964 to current
+```{r load_cui_data}
+### ERDAPP, NOAA upwelling indice CUI (BAKUN 3 degree)
+# Set the URL of the ERDDAP server
+url <- "https://upwell.pfeg.noaa.gov/erddap/"
+
+# Get information about the erdCUTI dataset
+info <- info(datasetid = "erdUI45mo", url = url)
+info # copy max range value from metadata
+
+
+# Download the dataset
+datcui <- griddap(info,
+               time = c("1964-01-01T00:00:00Z", "2025-11-15T00:00:00Z"), #currently pulling all data to date (adjust as needed)
+               latitude = c(45,45)
+)
+
+# format time and lat/long
+df_cui_raw<-datcui$data %>% 
+  mutate(time.day = lubridate::ymd_hms(time),
+         year = year(time.day),
+         month = month(time.day),
+         day = day(time.day), 
+         adjlong = longitude-360) #set to -180 to 180
+
+## only include april CUI from ERDAPP data (for now)
+df_cui<-df_cui_raw %>% 
+  filter(month %in% c(4,5,6)) %>% 
+         mutate(Month = month(month, label=TRUE)) %>% 
+  select(year, Month, CUI=upwelling_index) %>% 
+ #   rename("value" = upwelling_index)  %>%
+  #mutate(index = "CUI")
+    pivot_wider(names_from = Month, values_from=CUI)
+
+df_cui_apr<- df_cui %>% select(CUI=Apr, year)
+df_cui_mean<- df_cui %>% group_by(year) %>% summarise(mean_CUI=mean(c(Apr, May, Jun)))
+
+
+ggplot(df_cui_raw %>% filter(month %in% c(4,5,6)) , aes(x= year, group=month, color=month))+
+  geom_line( aes( y = upwelling_index)) +
+  geom_line(aes(y = upwelling_index_anomaly), color = "red")
+```
+
+
+## CUTI
+- Years: 1988 to current
+
+```{r load_cuti_data}
+
+#load CUTI
+# Set the URL of the ERDDAP server
+#url <- "https://upwell.pfeg.noaa.gov/erddap/"
+
+# Get information about the erdCUTI dataset
+info <- info(datasetid = "erdCUTImonthly", url = url)
+info #copy max time range from metadata
+
+# Download the dataset
+datCUTI <- griddap(info,
+               time = c("1988-01-15T00:00:00Z", "2025-03-15T00:00:00Z"), #currently pulling all data to date
+               latitude = c(45,45)
+)
+
+
+df_cuti<-datCUTI$data %>% 
+  mutate(time.day = lubridate::ymd_hms(time),
+         year = year(time.day),
+         month = month(time.day),
+         day = day(time.day),
+         Month = month(month, label=TRUE)) %>% 
+  filter(month %in% c(4, 5, 6)) %>% 
+  select(year, Month, CUTI)  %>% 
+ # rename(value = "CUTI") %>% 
+  #mutate(index = "CUTI") %>% 
+    pivot_wider(names_from = Month, values_from=CUTI)
+
+df_cuti_apr<- df_cuti %>% select(CUTI=Apr, year)
+df_cuti_mean<- df_cuti %>% group_by(year) %>% summarise(mean_CUTI=mean(c(Apr, May, Jun)))
+
+ggplot(df_cuti, aes(x = year, y = Apr)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "CUTI",
+       x = "Year",
+       y = "index") +
+  theme_minimal()
+
+```
+
+```{r load_beuti_data}
+
+#load BEUTI
+# Set the URL of the ERDDAP server
+#url <- "https://upwell.pfeg.noaa.gov/erddap/"
+
+# Get information about the erdCUTI dataset
+info <- info(datasetid = "erdBEUTImonthly", url = url)
+info #copy max time range from metadata
+
+# Download the dataset
+datBEUTI <- griddap(info,
+               time = c("1988-01-15T00:00:00Z", "2025-01-20T00:00:00Z"), #currently pulling all data to date
+               latitude = c(45,45)
+)
+
+
+df_beuti<-datBEUTI$data %>% 
+  mutate(time.day = lubridate::ymd_hms(time),
+         year = year(time.day),
+         month = month(time.day),
+         day = day(time.day),
+         Month = month(month, label=TRUE)) %>% 
+  filter(month %in% c(4, 5, 6)) %>% 
+  select(year, BEUTI, Month)  %>% 
+  #rename(value = "BEUTI") %>% 
+  #mutate(index = "BEUTI") %>% 
+  pivot_wider(names_from = Month, values_from=BEUTI)
+
+df_beuti_apr<- df_beuti %>% select(BEUTI=Apr, year)
+df_beuti_mean<- df_beuti %>% group_by(year) %>% summarise(mean_BEUTI=mean(c(Apr, May, Jun)))
+
+ggplot(df_beuti, aes(x = year, y = Apr)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "BEUTI",
+       x = "Year",
+       y = "index") +
+  theme_minimal()
+
+```
+
+```{r load_cuti_beuti_daily_data}
+
+#load CUTI
+# Set the URL of the ERDDAP server
+#url <- "https://upwell.pfeg.noaa.gov/erddap/"
+
+# Get information about the erdCUTI dataset
+info <- info(datasetid = "erdCUTIdaily", url = url)
+info #copy max time range from metadata
+
+# Download the dataset
+datCUTIdaily <- griddap(info,
+               time = c("1988-01-15T00:00:00Z", "2025-03-15T00:00:00Z"), #currently pulling all data to date
+               latitude = c(45,45)
+)
+
+info <- info(datasetid = "erdBEUTIdaily", url = url)
+info #copy max time range from metadata
+
+# Download the dataset
+datBEUTIdaily <- griddap(info,
+               time = c("1988-01-15T00:00:00Z", "2025-01-20T00:00:00Z"), #currently pulling all data to date
+               latitude = c(45,45)
+)
+
+df_cuti_daily<-datCUTIdaily$data %>% 
+  mutate(time.day = lubridate::ymd_hms(time),
+         year = year(time.day),
+         month = month(time.day),
+         day = day(time.day),
+         Month = month(month, label=TRUE)) %>% 
+  filter(month %in% c(4, 5, 6))
+
+df_beuti_daily<-datBEUTIdaily$data %>% 
+  mutate(time.day = lubridate::ymd_hms(time),
+         year = year(time.day),
+         month = month(time.day),
+         day = day(time.day),
+         Month = month(month, label=TRUE)) %>% 
+  filter(month %in% c(4, 5, 6))
+#Join BEUTI AND CUTI 
+df.beuti.cuti<-df_beuti_daily %>% inner_join(df_cuti_daily, by = c("time.day", "day", "Month","month", "year"))
+
+#Get monthly mean of mixed layer depth nitrate concentration
+df_mldno3<- df.beuti.cuti %>% mutate(mldno3=BEUTI/CUTI) %>% group_by(month, year) %>% summarise(month.mean=mean(mldno3))
+
+df_mldno3_apr<- df_mldno3 %>% filter(month==4) %>% rename(Apr.mldno3=month.mean)
+
+df_mldno3_mean<- df_mldno3 %>% group_by(year) %>% summarise(mean_mldno3=mean(month.mean))
+
+ggplot(df_mldno3 %>% filter(month==4), aes(x = year, y = month.mean)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "MLDNO3",
+       x = "Year",
+       y = "Nitrate") +
+  theme_minimal()
+
+```
+
+```{r LWG Outflow_data}
+
+Outflow <- read.csv(here( "LWG_Outflow.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date))
+
+df_outflow<- Outflow %>% group_by(month, Year) %>% summarise(mean.out=mean(value))
+
+df_outflow_apr<- df_outflow %>% filter(month==4) %>% rename(year=Year) 
+
+ggplot(df_outflow %>% filter(month==4), aes(x = Year, y = mean.out)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Outflow",
+       x = "Year",
+       y = "Outflow") +
+  theme_minimal()
+
+```
+
+```{r LWG Temperature_data}
+#Temperature not recorded during first weeks of march
+Temperature <- read.csv(here( "LWG_Temp.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date)) %>% filter(!is.na(value))
+
+#Get monthly means and filter out March because daily means not available for all of march
+df_temp<- Temperature %>% group_by(month, Year) %>% summarise(mean.temp=mean(value)) %>% filter(month!=3)
+
+df_temp_apr<- df_temp %>% filter(month==4) %>% rename(year=Year)
+
+ggplot(df_temp %>% filter(month==4), aes(x = Year, y = mean.temp)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Temperature",
+       x = "Year",
+       y = "Degrees (C)") +
+  theme_minimal()
+```
+
+```{r PNI_data}
+PNI <- read.csv(here( "pni_data.csv")) %>% select(Year, Annual.PNI) %>% rename(year=Year)
+```
+
+# SAR methods
+All sar datasets have an additional blank logit.s year for ahead forecast in shiny app. 
+
+
+## Scheuerell and Williams (2005) 
+- Years: 1964 to 2005
+- Reaches: LGR_LGA (ish)
+- Loaded data via  `SalmonSurvCUI`, `MARSS` package
+
+```{r load_MARSS_sar_data}
+## load the data
+data(SalmonSurvCUI, package = "MARSS")
+
+
+sar_raw_data <- SalmonSurvCUI %>% 
+  mutate(#index = "CUI",
+         sar.method = "Scheuerell and Williams (2005)") %>% 
+ # rename("value" = CUI.apr) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  left_join(df_cui, by = c("year")) %>% 
+  select(-CUI.apr) %>% 
+        add_row(year = max(.$year)+1, logit.s = NA, sar.method = "Scheuerell and Williams (2005)", Apr = NA, Sep=NA, Oct=NA)   #add 2006 NA row for ahead forecast
+
+
+
+#join with CUTI data only (others do not have enough older years overlap), includes NA for 2006
+sar_raw_data_CUI_CUTI<-sar_raw_data %>% 
+  left_join(df_cuti, by = "year") %>% 
+  bind_rows(sar_raw_data) %>% 
+  mutate( reach = "LGR_LGA")
+
+```
+
+## CBR DART SAR data
+- Reaches: LGR_LGA, BON_BOA
+To generate CBR sar data, used https://www.cbr.washington.edu/dart/query/pit_sar_esu query tool with selections: 
+  - Lower Granite (All) to Lower Granite Adult or Bonneville (All) to Bonneville Adult
+  - Chinook Snake R Spring/Summer ESU
+  - Rear Type : Wild
+  - Adult Detections : Exclude 0,1-Year Adult Detections
+  - Set Annual Summary Table Group Type: by Release Site
+  - download Pooled by Year SAR csv file link
+  - downloaded, saved in `data-raw/SAR` folder, and renamed `LGRLGA_allpassage_wild_spsu_chinook.csv` 
+  - per [issue #4](https://github.com/Columbia-Basin-Research-CBR/SARforecastDLM/issues/4) will limit analysis of DART data to 2002 to most recent outmigration year (2021); reconsider if using different variance matrix- check it still will not converge if included.
+```{r load_LGRLGA_dart_sar_data}
+#generated new file 1/13/25 with updated years of sar (2000 to 2021) changed values from previous `LGRtoLGA_allpass_W_spsu_ch.csv` file (added 2000-2001; updated 2021 sar values)
+
+load(here( "LGRLGA_allpassage_wild_spsu_chinook.rda"))
+df.cbr.raw<- LGRLGA_allpassage_wild_spsu_chinook %>% 
+  drop_na() %>% 
+  select(year, meanSAR) %>% #drop CBR notes and NA values
+  mutate(year = as.integer(year))
+
+# must divide meanSAR /100 to get 0 to 1 and then apply logit/transform since DART sar calculated as adultCount/juvCount*100
+df.cbr<-df.cbr.raw %>% 
+  mutate(logit.s = qlogis(meanSAR/100)) %>% #
+  select(-meanSAR) %>%
+  mutate(sar.method = "DART",
+         reach = "LGR_LGA") %>% 
+  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "DART", reach = "LGR_LGA") #add next year with NA
+
+
+#CBR SAR + April data
+df.cbr.LGRLGA.apr<-df.cbr %>% inner_join(df_cui_apr, by = "year")  %>% inner_join(df_cuti_apr, by = "year") %>% inner_join(df_beuti_apr, by = "year")  %>% inner_join(df_mldno3_apr, by = "year")  %>% inner_join(df_outflow_apr, by = "year")  %>% inner_join(df_temp_apr, by = "year")  %>% inner_join(PNI, by = "year")  %>% inner_join(df_cui_mean, by = "year") %>% inner_join(df_cuti_mean, by = "year")  %>% inner_join(df_beuti_mean, by = "year")  %>% inner_join(df_mldno3_mean, by = "year")
+
+#Save CBR SAR April data
+saveRDS(df.cbr.LGRLGA.apr, "df_cbr_LGRLGA_apr.rds")
+```
+
+
+```{r load_BONBOA_dart_sar_data}
+#generated new file 1/13/25 with updated years of sar (2000 to 2021) changed values from previous `LGRtoLGA_allpass_W_spsu_ch.csv` file (added 2000-2001; updated 2021 sar values)
+
+load(here("data", "BONBOA_allpassage_wild_spsu_chinook.rda"))
+df.cbr.raw<-BONBOA_allpassage_wild_spsu_chinook %>% 
+  drop_na() %>% 
+  select(year, meanSAR) %>% #drop CBR notes and NA values
+  mutate(year = as.integer(year))
+
+# must divide meanSAR /100 to get 0 to 1 and then apply logit/transform since DART sar calculated as adultCount/juvCount*100
+df.cbr<-df.cbr.raw %>% 
+  mutate(logit.s = qlogis(meanSAR/100)) %>% #
+  select(-meanSAR) %>%
+  mutate(sar.method = "DART",
+         reach = "BON_BOA") %>% 
+  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "DART", reach = "BON_BOA") #add next year with NA
+
+
+#CUI
+df.cbr.cui<-df.cbr %>% inner_join(df_cui, by = "year")
+
+#CUTI
+df.cbr.cuti<-df.cbr %>% inner_join(df_cuti, by = "year")
+
+#ICPB
+df.cbr.icpb<-df.cbr %>% inner_join(df_icpb, by = "year") 
+#NCBI
+df.cbr.ncbi<-df.cbr %>% inner_join(df_ncbi, by = "year") 
+
+
+#join all indices
+df.cbr<-rbind(df.cbr.cui, df.cbr.cuti, df.cbr.icpb, df.cbr.ncbi) 
+
+
+#add to sar_raw_updated with DART sar method with CUI,CUTI, NCBI
+sar_raw_data<-rbind(sar_raw_data, df.cbr)
+```
+
+## CJS estimated survival
+- Years: 1994 to 2021
+- Reaches: LGR_LGA, BON_BOA
+- This has been updated with JG generated data-- includes which covariates? Just transport?
+- To update this with freshwater covariates (transport,temperature, etc)
+
+```{r load_LGRLGA_cjs_sar_data}
+
+df_cjs_raw<-read_csv(here( "lgr.lga.surv.yr.1994.2021_250309.csv")) 
+df_cjs_raw <- df_cjs_raw[-1]
+
+
+df.cjs <- df_cjs_raw %>% 
+  mutate(logit.s = qlogis(LGR_LGA_SAR)) %>% 
+  select(-LGR_LGA_SAR) %>% 
+  mutate(sar.method = "CJS", 
+         reach = "LGR_LGA") %>% 
+  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "CJS", reach = "LGR_LGA") #add 2020 with NA
+
+df.cjs.LGRLGA.apr<-df.cjs %>% inner_join(df_cui_apr, by = "year")  %>% inner_join(df_cuti_apr, by = "year") %>% inner_join(df_beuti_apr, by = "year")  %>% inner_join(df_mldno3_apr, by = "year")  %>% inner_join(df_outflow_apr, by = "year")  %>% inner_join(df_temp_apr, by = "year")  %>% inner_join(PNI, by = "year") %>% inner_join(df_cui_mean, by = "year") %>% inner_join(df_cuti_mean, by = "year")  %>% inner_join(df_beuti_mean, by = "year")  %>% inner_join(df_mldno3_mean, by = "year")
+
+#Save LGRLGA CJS data
+saveRDS(df.cjs.LGRLGA.apr, "df_cjs_LGRLGA_apr.rds")
+```
+
+```{r load_BONBOA_cjs_sar_data}
+
+df_cjs_raw<-read_csv(here("bon.boa.surv.yr.1994.2021_250309.csv")) 
+df_cjs_raw <- df_cjs_raw[-1]
+
+
+
+
+df.cjs <- df_cjs_raw %>% 
+  mutate(logit.s = qlogis(BON_BOA_SAR)) %>% 
+  select(-BON_BOA_SAR) %>% 
+  mutate(sar.method = "CJS", 
+         reach = "BON_BOA") %>% 
+  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "CJS", reach = "BON_BOA") #add 2020 with NA
+
+
+#CUI
+df.cjs.cui<- df.cjs %>% inner_join(df_cui, by = "year") 
+
+saveRDS(df.cjs.cui, "df_cjs_cui.rds")
+#CUTI
+df.cjs.cuti<-df.cjs %>% inner_join(df_cuti, by = "year")
+
+saveRDS(df.cjs.cuti, "df_cjs_cuti.rds")
+#BEUTI
+df.cjs.beuti<-df.cjs %>% inner_join(df_beuti, by = "year")
+saveRDS(df.cjs.beuti, "df_cjs_beuti.rds")
+
+#ICPB
+df.cjs.icpb<-df.cjs %>% inner_join(df_icpb, by = "year")
+#NCBI
+df.cjs.ncbi<-df.cjs %>% inner_join(df_ncbi, by = "year") 
+
+
+#join all indices
+df.cjs<-rbind(df.cjs.cui, df.cjs.cuti, df.cjs.icpb, df.cjs.ncbi) 
+
+#add to sar_raw_data
+sar_raw_data<-rbind(sar_raw_data, df.cjs)
+```
+
+# save (update) sar_raw_data
+As of 6/20/24 adding NCBI back into DLM as place holder for ICPB data. NCBI is publicly available whereas ICPB is not. Updated 1/13/25, per email exchange with E. Daly, ICPB data is publically available through NOAA Stoplight Chart. Adding back into option list with NCBI.  
+
+```{r check_save_sar_raw_data}
+#check each sar method has correct years and indices
+sar_raw_data%>% 
+  group_by(sar.method, index) %>% 
+  summarise(n_distinct(year))
+
+
+# plot sar on logit scale
+sar_raw_data %>% 
+  filter(index == "CUI") %>% 
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = logit.s, color = sar.method))+
+  geom_point(aes(y = logit.s, color = sar.method), shape = 21) +
+  labs(title = "Observed SAR by method",
+       x = "Year",
+       y = "SAR (logs-odd)") +
+  theme_minimal()
+
+#plot inverse logit to check
+sar_raw_data %>% 
+  mutate(sar = plogis(logit.s)*100) %>% 
+  filter(index == "CUI") %>% 
+    ggplot(aes(x = year)) +
+  geom_line(aes(y = sar, color = sar.method))+
+  geom_point(aes(y = sar, color = sar.method), shape = 21) +
+  labs(title = "Observed SAR by method",
+       x = "Year",
+       y = "SAR (%)") +
+  theme_minimal()
+
+
+#inverse matches original data --yes
+df_marss<-SalmonSurvCUI %>% 
+  mutate(sar = plogis(logit.s))
+ggplot() +
+  geom_line(data = df_marss, aes(x = year, y = sar*100), color = "red") + #, color = "Scheuerell and Williams (2005)")) +
+  geom_line(data = df_cjs_raw, aes(x = year, y = LGR_LGA_SAR), color = "blue") + #, color = "CJS")) +
+  geom_line(data = df.cbr.raw, aes(x = year, y = meanSAR), color = "green") + #, color = "DART")) +
+    labs(title = "Observed SAR by method",
+       x = "Year",
+       y = "SAR (%)") +
+  theme_minimal()
+```
+
+
+```{r save_sar_raw_data}
+#save updated sar_raw_data
+usethis::use_data(sar_raw_data, overwrite = TRUE)
+```
+
