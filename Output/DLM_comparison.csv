@@ -1,0 +1,9 @@
+"Covariate","Model","Package","LogLik"
+NA,"Constant","dlm",-31.7589070825709
+NA,"Constant","MARSS",-44.2171523707252
+"April CUI","Constant","dlm",-48.1790245389787
+"April CUI","Constant","MARSS",-40.0331925041467
+"Sept CUI","Constant","dlm",-48.4571927266009
+"Sept CUI","Constant","MARSS",-44.0976717488429
+"Oct CUI","Constant","dlm",-48.2567443285627
+"Oct CUI","Constant","MARSS",-42.3464850722365

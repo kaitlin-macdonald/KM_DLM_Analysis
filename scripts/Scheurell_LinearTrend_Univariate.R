@@ -8,12 +8,15 @@ library(tidyverse)
 
 cjs_raw<- readRDS("data/df_SAR_LGRLGA_MV.rds") 
 
-cjs<- cjs_raw %>% select(-c(SW_logit_phi, SAR_logit_phi)) %>% drop_na()
+cjs<- cjs_raw
+
+SAR<- as.matrix(cjs_raw %>% select(SW_logit_phi, SAR_logit_phi, cjs_logit_phi))
+SAR
 
 ################################
 ##Salmon Survive test model
 year_cjs<- cjs$year
-logit.s_cjs<- cjs$cjs_logit_phi
+logit.s_cjs<- SAR
 CUI_z<- scale(cjs$CUI)
 CUTI_z<- scale(cjs$CUTI)
 BEUTI_z<- scale(cjs$BEUTI)
@@ -32,14 +35,16 @@ SST_6mo_z<- scale(cjs$SST_6mo)
 ##########################
 #Run Reference model
 buildFun_cjs_ref<- function(parm){
-  mod_cjs_ref<- dlmModPoly(2) 
-  V(mod_cjs_ref)<- exp(parm[1])
-  diag(W(mod_cjs_ref))[1:2]<- exp(parm[2:3])
-  return(mod_cjs_ref)
+  mod_ref<- dlmModPoly(1) 
+  mod_ref$FF <- mod_ref$FF %x% diag(3)
+  mod_ref$GG <- mod_ref$GG %x% diag(3)
+  mod_ref$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_ref$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6])))
+  return(mod_ref)
   
 }
 
-fit_cjs_ref<- dlmMLE(logit.s_cjs, parm = rep(0,3), build=buildFun_cjs_ref, hessian=TRUE)
+fit_cjs_ref<- dlmMLE(logit.s_cjs, parm = rep(0,6), build=buildFun_cjs_ref, hessian=TRUE)
 conv_cjs_ref<- fit_cjs_ref$convergence
 
 dlmLogits_cjs_ref<- buildFun_cjs_ref(fit_cjs_ref$par)
@@ -54,17 +59,17 @@ mod_cjs_ref<-buildFun_cjs_ref(fit_cjs_ref$par)
 cjs_reffilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_ref)
 
 #Mean absolute percentage error
-MAPE_cjs_ref<- mean(abs((cjs_reffilter$f-logit.s_cjs)/logit.s_cjs))
-rmse_cjs_ref<- rmse(logit.s_cjs, cjs_reffilter$f)
+MAPE_cjs_ref<- mean(na.omit(abs((cjs_reffilter$f-logit.s_cjs)/logit.s_cjs)))
+rmse_cjs_ref<- sqrt(mean(na.omit((cjs_reffilter$f - logit.s_cjs)^2)))
 
 #dlmLL caculates the neg. LL (lower is better)
-loglik_cjs_ref <- dlmLL(logit.s_cjs, dlmModPoly(2))
+loglik_cjs_ref <- dlmLL(logit.s_cjs, dlmModPoly(1))
 
-n.coef <- 3
+n.coef <- 6
 cjs.ref.aic <- (2 * (loglik_cjs_ref)) + 2 * (sum(n.coef))
 cjs.ref.aicc <- (2 * (loglik_cjs_ref)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)
 
-mod_sel_df<- data.frame(Covariate=NA, Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_ref, RMSE=rmse_cjs_ref, Href=0, AICc=cjs.ref.aicc)
+mod_sel_df<- data.frame(Covariate=NA, Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_ref, RMSE=rmse_cjs_ref, Href=0, AICc=cjs.ref.aicc)
 
 ####Goodness of fit
 
@@ -90,14 +95,21 @@ tsdiag(cjs_reffilter)
 ##########################
 #Run CUI model
 buildFun_cjs_CUI<- function(parm){
-  mod_cjs_CUI<- dlmModPoly(2) + dlmModReg(X=CUI_z, addInt=FALSE)
-  V(mod_cjs_CUI)<- exp(parm[1])
-  diag(W(mod_cjs_CUI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_CUI)
+  mod_CUI<- dlmModPoly(1) + dlmModReg(X=CUI_z, addInt=FALSE)
+ # V(mod_cjs_CUI)<- exp(parm[1])
+  #diag(W(mod_cjs_CUI))[1:3]<- exp(parm[2:4])
+  #return(mod_cjs_CUI)
+  mod_CUI$FF <- mod_CUI$FF %x% diag(3)
+  mod_CUI$GG <- mod_CUI$GG %x% diag(3)
+  mod_CUI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_CUI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_CUI$m0 <- rep(0, 9)
+  mod_CUI$C0 <- diag(9) * 0
+  return(mod_CUI)
   
 }
 
-fit_cjs_CUI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_CUI, hessian=TRUE)
+fit_cjs_CUI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_CUI, hessian=TRUE)
 conv_cjs_CUI<- fit_cjs_CUI$convergence
 
 dlmLogits_cjs_CUI<- buildFun_cjs_CUI(fit_cjs_CUI$par)
@@ -112,16 +124,16 @@ mod_cjs_CUI<- buildFun_cjs_CUI(fit_cjs_CUI$par)
 cjs_CUIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_CUI)
 
 #Mean absolute percentage error
-MAPE_cjs_CUI<- mean(abs((cjs_CUIfilter$f-logit.s_cjs)/logit.s_cjs))
-#Root mean square error
-rmse_cjs_CUI<- rmse(logit.s_cjs, cjs_CUIfilter$f)
+MAPE_cjs_CUI<- mean(na.omit(abs((cjs_CUIfilter$f-logit.s_cjs)/logit.s_cjs)))
+rmse_cjs_CUI<- sqrt(mean(na.omit((cjs_CUIfilter$f - logit.s_cjs)^2)))
+
 
 #dlmLL caculates the neg. LL (lower is better)
-loglik_cjs_CUI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=CUI_z, addInt=FALSE))
+loglik_cjs_CUI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=CUI_z, addInt=FALSE))
 
 Href_cjs_CUI<- 2*(loglik_cjs_ref - loglik_cjs_CUI)
 
-n.coef <- 4
+n.coef <- 9
 cjs.CUI.aic <- (2 * (loglik_cjs_CUI)) + 2 * (sum(n.coef))  
 cjs.CUI.AICc <- (2 * (loglik_cjs_CUI)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1) 
 
@@ -146,18 +158,22 @@ tsdiag(cjs_CUIfilter)
 hist(resids_CUI)
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="CUI", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_CUI, RMSE=rmse_cjs_CUI, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="CUI", Model="Constant", Data="Mutlivariate", MAPE=MAPE_cjs_CUI, RMSE=rmse_cjs_CUI, 
                      Href=Href_cjs_CUI, AICc=cjs.CUI.AICc)
 ###########################################
 buildFun_cjs_CUTI<- function(parm){
-  mod_cjs_CUTI<- dlmModPoly(2) + dlmModReg(X=CUTI_z, addInt=FALSE)
-  V(mod_cjs_CUTI)<- exp(parm[1])
-  diag(W(mod_cjs_CUTI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_CUTI)
+  mod_CUTI<- dlmModPoly(1) + dlmModReg(X=CUTI_z, addInt=FALSE)
+  mod_CUTI$FF <- mod_CUTI$FF %x% diag(3)
+  mod_CUTI$GG <- mod_CUTI$GG %x% diag(3)
+  mod_CUTI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_CUTI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_CUTI$m0 <- rep(0, 9)
+  mod_CUTI$C0 <- diag(9) * 0
+  return(mod_CUTI)
   
 }
 
-fit_cjs_CUTI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_CUTI, hessian=TRUE)
+fit_cjs_CUTI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_CUTI, hessian=TRUE)
 conv_cjs_CUTI<- fit_cjs_CUTI$convergence
 
 dlmLogits_cjs_CUTI<- buildFun_cjs_CUTI(fit_cjs_CUTI$par)
@@ -171,19 +187,20 @@ mod_cjs_CUTI<- buildFun_cjs_CUTI(fit_cjs_CUTI$par)
 cjs_CUTIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_CUTI)
 
 #What to do about first obs??
-MAPE_cjs_CUTI<- mean(abs((cjs_CUTIfilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_CUTI<- mean(na.omit(abs((cjs_CUTIfilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_CUTI<- rmse(logit.s_cjs, cjs_CUTIfilter$f)
+rmse_cjs_CUTI<- sqrt(mean(na.omit((cjs_CUTIfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_CUTI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=CUTI_z, addInt=FALSE))
+
+loglik_cjs_CUTI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=CUTI_z, addInt=FALSE))
 
 Href_cjs_CUTI<- 2*(loglik_cjs_ref - loglik_cjs_CUTI)
 
-n.coef<- 4
+n.coef<- 9
 cjs.CUTI.AICc <- (2 * (loglik_cjs_CUTI)) + 2 * (sum(n.coef))  + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)   
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="CUTI", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_CUTI, RMSE=rmse_cjs_CUTI, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="CUTI", Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_CUTI, RMSE=rmse_cjs_CUTI, 
                      Href=Href_cjs_CUTI, AICc=cjs.CUTI.AICc)
 
 #Assess Goodness of fit
@@ -208,14 +225,17 @@ hist(resids_CUTI)
 
 ###########################################
 buildFun_cjs_BEUTI<- function(parm){
-  mod_cjs_BEUTI<- dlmModPoly(2) + dlmModReg(X=BEUTI_z, addInt=FALSE)
-  V(mod_cjs_BEUTI)<- exp(parm[1])
-  diag(W(mod_cjs_BEUTI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_BEUTI)
-  
+  mod_BEUTI<- dlmModPoly(1) + dlmModReg(X=BEUTI_z, addInt=FALSE)
+  mod_BEUTI$FF <- mod_BEUTI$FF %x% diag(3)
+  mod_BEUTI$GG <- mod_BEUTI$GG %x% diag(3)
+  mod_BEUTI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_BEUTI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_BEUTI$m0 <- rep(0, 9)
+  mod_BEUTI$C0 <- diag(9) * 0
+  return(mod_BEUTI)
 }
 
-fit_cjs_BEUTI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_BEUTI, hessian=TRUE)
+fit_cjs_BEUTI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_BEUTI, hessian=TRUE)
 conv_cjs_BEUTI<- fit_cjs_BEUTI$convergence
 
 dlmLogits_cjs_BEUTI<- buildFun_cjs_BEUTI(fit_cjs_BEUTI$par)
@@ -229,18 +249,18 @@ mod_cjs_BEUTI<- buildFun_cjs_BEUTI(fit_cjs_BEUTI$par)
 cjs_BEUTIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_BEUTI)
 
 #What to do about first obs??
-MAPE_cjs_BEUTI<- mean(abs((cjs_BEUTIfilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_BEUTI<- mean(na.omit(abs((cjs_BEUTIfilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_BEUTI<- rmse(logit.s_cjs, cjs_BEUTIfilter$f)
+rmse_cjs_BEUTI<- sqrt(mean(na.omit((cjs_BEUTIfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_BEUTI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=BEUTI_z, addInt=FALSE))
+loglik_cjs_BEUTI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=BEUTI_z, addInt=FALSE))
 
 Href_cjs_BEUTI<- 2*(loglik_cjs_ref - loglik_cjs_BEUTI)
 
 cjs.BEUTI.AICc <- (2 * (loglik_cjs_BEUTI)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)  
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="BEUTI", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_BEUTI, RMSE=rmse_cjs_BEUTI, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="BEUTI", Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_BEUTI, RMSE=rmse_cjs_BEUTI, 
                      Href=Href_cjs_BEUTI, AICc=cjs.BEUTI.AICc)
 
 #Assess Goodness of fit
@@ -265,14 +285,18 @@ hist(resids_BEUTI)
 
 ###########################################
 buildFun_cjs_mldno3<- function(parm){
-  mod_cjs_mldno3<- dlmModPoly(2) + dlmModReg(X=mldno3_z, addInt=FALSE)
-  V(mod_cjs_mldno3)<- exp(parm[1])
-  diag(W(mod_cjs_mldno3))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_mldno3)
+  mod_mldno3<- dlmModPoly(1) + dlmModReg(X=mldno3_z, addInt=FALSE)
+  mod_mldno3$FF <- mod_mldno3$FF %x% diag(3)
+  mod_mldno3$GG <- mod_mldno3$GG %x% diag(3)
+  mod_mldno3$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_mldno3$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_mldno3$m0 <- rep(0, 9)
+  mod_mldno3$C0 <- diag(9) * 0
+  return(mod_mldno3)
   
 }
 
-fit_cjs_mldno3<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_mldno3, hessian=TRUE)
+fit_cjs_mldno3<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_mldno3, hessian=TRUE)
 conv_cjs_mldno3<- fit_cjs_mldno3$convergence
 
 dlmLogits_cjs_mldno3<- buildFun_cjs_mldno3(fit_cjs_mldno3$par)
@@ -286,18 +310,18 @@ mod_cjs_mldno3<- buildFun_cjs_mldno3(fit_cjs_mldno3$par)
 cjs_mldno3filter<- dlmFilter(logit.s_cjs, mod=mod_cjs_mldno3)
 
 #What to do about first obs??
-MAPE_cjs_mldno3<- mean(abs((cjs_mldno3filter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_mldno3<- mean(na.omit(abs((cjs_mldno3filter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_mldno3<- rmse(logit.s_cjs, cjs_mldno3filter$f)
+rmse_cjs_mldno3<- sqrt(mean(na.omit((cjs_mldno3filter$f - logit.s_cjs)^2)))
 
-loglik_cjs_mldno3 <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=mldno3_z, addInt=FALSE))
+loglik_cjs_mldno3 <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=mldno3_z, addInt=FALSE))
 
 Href_cjs_mldno3<- 2*(loglik_cjs_ref - loglik_cjs_mldno3)
 
 cjs.mldno3.AICc <- (2 * (loglik_cjs_mldno3)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1) 
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="Mldno3", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_mldno3, RMSE=rmse_cjs_mldno3, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="Mldno3", Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_mldno3, RMSE=rmse_cjs_mldno3, 
                      Href=Href_cjs_mldno3, AICc=cjs.mldno3.AICc)
 
 #Assess Goodness of fit
@@ -322,14 +346,18 @@ hist(resids_mldno3)
 
 ###########################################
 buildFun_cjs_mnCUI<- function(parm){
-  mod_cjs_mnCUI<- dlmModPoly(2) + dlmModReg(X=CUI_mean_z, addInt=FALSE)
-  V(mod_cjs_mnCUI)<- exp(parm[1])
-  diag(W(mod_cjs_mnCUI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_mnCUI)
+  mod_mnCUI<- dlmModPoly(1) + dlmModReg(X=CUI_mean_z, addInt=FALSE)
+  mod_mnCUI$FF <- mod_mnCUI$FF %x% diag(3)
+  mod_mnCUI$GG <- mod_mnCUI$GG %x% diag(3)
+  mod_mnCUI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_mnCUI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_mnCUI$m0 <- rep(0, 9)
+  mod_mnCUI$C0 <- diag(9) * 0
+  return(mod_mnCUI)
   
 }
 
-fit_cjs_mnCUI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_mnCUI, hessian=TRUE)
+fit_cjs_mnCUI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_mnCUI, hessian=TRUE)
 conv_cjs_mnCUI<- fit_cjs_mnCUI$convergence
 
 dlmLogits_cjs_mnCUI<- buildFun_cjs_mnCUI(fit_cjs_mnCUI$par)
@@ -343,18 +371,18 @@ mod_cjs_mnCUI<- buildFun_cjs_mnCUI(fit_cjs_mnCUI$par)
 cjs_mnCUIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_mnCUI)
 
 #What to do about first obs??
-MAPE_cjs_mnCUI<- mean(abs((cjs_mnCUIfilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_mnCUI<- mean(na.omit(abs((cjs_mnCUIfilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_mnCUI<- rmse(logit.s_cjs, cjs_mnCUIfilter$f)
+rmse_cjs_mnCUI<- sqrt(mean(na.omit((cjs_mnCUIfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_mnCUI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=CUI_mean_z, addInt=FALSE))
+loglik_cjs_mnCUI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=CUI_mean_z, addInt=FALSE))
 
 Href_cjs_mnCUI<- 2*(loglik_cjs_ref - loglik_cjs_mnCUI)
 
 cjs.mnCUI.AICc <- (2 * (loglik_cjs_mnCUI)) + 2 * (sum(n.coef))+ 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)  
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="Mean_CUI", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_mnCUI, RMSE=rmse_cjs_mnCUI, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="Mean_CUI", Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_mnCUI, RMSE=rmse_cjs_mnCUI, 
                      Href=Href_cjs_mnCUI, AICc=cjs.mnCUI.AICc)
 #Assess Goodness of fit
 resids_mnCUI <- residuals(cjs_mnCUIfilter, sd = FALSE)
@@ -378,14 +406,18 @@ hist(resids_mnCUI)
 
 ###########################################
 buildFun_cjs_mnCUTI<- function(parm){
-  mod_cjs_mnCUTI<- dlmModPoly(2) + dlmModReg(X=CUTI_mean_z, addInt=FALSE)
-  V(mod_cjs_mnCUTI)<- exp(parm[1])
-  diag(W(mod_cjs_mnCUTI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_mnCUTI)
+  mod_mnCUTI<- dlmModPoly(1) + dlmModReg(X=CUTI_mean_z, addInt=FALSE)
+  mod_mnCUTI$FF <- mod_mnCUTI$FF %x% diag(3)
+  mod_mnCUTI$GG <- mod_mnCUTI$GG %x% diag(3)
+  mod_mnCUTI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_mnCUTI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_mnCUTI$m0 <- rep(0, 9)
+  mod_mnCUTI$C0 <- diag(9) * 0
+  return(mod_mnCUTI)
   
 }
 
-fit_cjs_mnCUTI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_mnCUTI, hessian=TRUE)
+fit_cjs_mnCUTI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_mnCUTI, hessian=TRUE)
 conv_cjs_mnCUTI<- fit_cjs_mnCUTI$convergence
 
 dlmLogits_cjs_mnCUTI<- buildFun_cjs_mnCUTI(fit_cjs_mnCUTI$par)
@@ -436,14 +468,18 @@ hist(resids_mnCUTI)
 
 ###########################################
 buildFun_cjs_mnBEUTI<- function(parm){
-  mod_cjs_mnBEUTI<- dlmModPoly(2) + dlmModReg(X=BEUTI_mean_z, addInt=FALSE)
-  V(mod_cjs_mnBEUTI)<- exp(parm[1])
-  diag(W(mod_cjs_mnBEUTI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_mnBEUTI)
+  mod_mnBEUTI<- dlmModPoly(1) + dlmModReg(X=BEUTI_mean_z, addInt=FALSE)
+  mod_mnBEUTI$FF <- mod_mnBEUTI$FF %x% diag(3)
+  mod_mnBEUTI$GG <- mod_mnBEUTI$GG %x% diag(3)
+  mod_mnBEUTI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_mnBEUTI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_mnBEUTI$m0 <- rep(0, 9)
+  mod_mnBEUTI$C0 <- diag(9) * 0
+  return(mod_mnBEUTI)
   
 }
 
-fit_cjs_mnBEUTI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_mnBEUTI, hessian=TRUE)
+fit_cjs_mnBEUTI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_mnBEUTI, hessian=TRUE)
 conv_cjs_mnBEUTI<- fit_cjs_mnBEUTI$convergence
 
 dlmLogits_cjs_mnBEUTI<- buildFun_cjs_mnBEUTI(fit_cjs_mnBEUTI$par)
@@ -457,11 +493,11 @@ mod_cjs_mnBEUTI<- buildFun_cjs_mnBEUTI(fit_cjs_mnBEUTI$par)
 cjs_mnBEUTIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_mnBEUTI)
 
 #What to do about first obs??
-MAPE_cjs_mnBEUTI<- mean(abs((cjs_mnBEUTIfilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_mnBEUTI<- mean(na.omit(abs((cjs_mnBEUTIfilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_mnBEUTI<- rmse(logit.s_cjs, cjs_mnBEUTIfilter$f)
+rmse_cjs_mnBEUTI<- sqrt(mean(na.omit((cjs_mnBEUTIfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_mnBEUTI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=BEUTI_mean_z, addInt=FALSE))
+loglik_cjs_mnBEUTI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=BEUTI_mean_z, addInt=FALSE))
 
 Href_cjs_mnBEUTI<- 2*(loglik_cjs_ref - loglik_cjs_mnBEUTI)
 
@@ -494,14 +530,18 @@ hist(resids_mnBEUTI)
 
 ###########################################
 buildFun_cjs_mnmldno3<- function(parm){
-  mod_cjs_mnmldno3<- dlmModPoly(2) + dlmModReg(X=mldno3_mean_z, addInt=FALSE)
-  V(mod_cjs_mnmldno3)<- exp(parm[1])
-  diag(W(mod_cjs_mnmldno3))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_mnmldno3)
+  mod_mnmldno3<- dlmModPoly(1) + dlmModReg(X=mldno3_mean_z, addInt=FALSE)
+  mod_mnmldno3$FF <- mod_mnmldno3$FF %x% diag(3)
+  mod_mnmldno3$GG <- mod_mnmldno3$GG %x% diag(3)
+  mod_mnmldno3$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_mnmldno3$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_mnmldno3$m0 <- rep(0, 9)
+  mod_mnmldno3$C0 <- diag(9) * 0
+  return(mod_mnmldno3)
   
 }
 
-fit_cjs_mnmldno3<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_mnmldno3, hessian=TRUE)
+fit_cjs_mnmldno3<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_mnmldno3, hessian=TRUE)
 conv_cjs_mnmldno3<- fit_cjs_mnmldno3$convergence
 
 dlmLogits_cjs_mnmldno3<- buildFun_cjs_mnmldno3(fit_cjs_mnmldno3$par)
@@ -515,11 +555,11 @@ mod_cjs_mnmldno3<- buildFun_cjs_mnmldno3(fit_cjs_mnmldno3$par)
 cjs_mnmldno3filter<- dlmFilter(logit.s_cjs, mod=mod_cjs_mnmldno3)
 
 #What to do about first obs??
-MAPE_cjs_mnmldno3<- mean(abs((cjs_mnmldno3filter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_mnmldno3<- mean(na.omit(abs((cjs_mnmldno3filter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_mnmldno3<- rmse(logit.s_cjs, cjs_mnmldno3filter$f)
+rmse_cjs_mnmldno3<- sqrt(mean(na.omit((cjs_mnBEUTIfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_mnmldno3 <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=mldno3_mean_z, addInt=FALSE))
+loglik_cjs_mnmldno3 <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=mldno3_mean_z, addInt=FALSE))
 
 Href_cjs_mnmldno3<- 2*(loglik_cjs_ref - loglik_cjs_mnmldno3)
 
@@ -551,14 +591,18 @@ hist(resids_mnmldno3)
 
 ###########################################
 buildFun_cjs_outflow<- function(parm){
-  mod_cjs_outflow<- dlmModPoly(2) + dlmModReg(X=outflow_z, addInt=FALSE)
-  V(mod_cjs_outflow)<- exp(parm[1])
-  diag(W(mod_cjs_outflow))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_outflow)
+  mod_outflow<- dlmModPoly(1) + dlmModReg(X=outflow_z, addInt=FALSE)
+  mod_outflow$FF <- mod_outflow$FF %x% diag(3)
+  mod_outflow$GG <- mod_outflow$GG %x% diag(3)
+  mod_outflow$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_outflow$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_outflow$m0 <- rep(0, 9)
+  mod_outflow$C0 <- diag(9) * 0
+  return(mod_outflow)
   
 }
 
-fit_cjs_outflow<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_outflow, hessian=TRUE)
+fit_cjs_outflow<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_outflow, hessian=TRUE)
 conv_cjs_outflow<- fit_cjs_outflow$convergence
 
 dlmLogits_cjs_outflow<- buildFun_cjs_outflow(fit_cjs_outflow$par)
@@ -608,14 +652,18 @@ hist(resids_outflow)
 
 ###########################################
 buildFun_cjs_temp<- function(parm){
-  mod_cjs_temp<- dlmModPoly(2) + dlmModReg(X=temp_z, addInt=FALSE)
-  V(mod_cjs_temp)<- exp(parm[1])
-  diag(W(mod_cjs_temp))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_temp)
+  mod_temp<- dlmModPoly(1) + dlmModReg(X=temp_z, addInt=FALSE)
+  mod_temp$FF <- mod_temp$FF %x% diag(3)
+  mod_temp$GG <- mod_temp$GG %x% diag(3)
+  mod_temp$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_temp$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_temp$m0 <- rep(0, 9)
+  mod_temp$C0 <- diag(9) * 0
+  return(mod_temp)
   
 }
 
-fit_cjs_temp<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_temp, hessian=TRUE)
+fit_cjs_temp<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_temp, hessian=TRUE)
 conv_cjs_temp<- fit_cjs_temp$convergence
 
 dlmLogits_cjs_temp<- buildFun_cjs_temp(fit_cjs_temp$par)
@@ -666,14 +714,18 @@ hist(resids_temp)
 #################################
 
 buildFun_cjs_PNI<- function(parm){
-  mod_cjs_PNI<- dlmModPoly(2) + dlmModReg(X=PNI_z, addInt=FALSE)
-  V(mod_cjs_PNI)<- exp(parm[1])
-  diag(W(mod_cjs_PNI))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_PNI)
+  mod_PNI<- dlmModPoly(1) + dlmModReg(X=PNI_z, addInt=FALSE)
+  mod_PNI$FF <- mod_PNI$FF %x% diag(3)
+  mod_PNI$GG <- mod_PNI$GG %x% diag(3)
+  mod_PNI$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_PNI$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_PNI$m0 <- rep(0, 9)
+  mod_PNI$C0 <- diag(9) * 0
+  return(mod_PNI)
   
 }
 
-fit_cjs_PNI<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_PNI, hessian=TRUE)
+fit_cjs_PNI<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_PNI, hessian=TRUE)
 conv_cjs_PNI<- fit_cjs_PNI$convergence
 
 dlmLogits_cjs_PNI<- buildFun_cjs_PNI(fit_cjs_PNI$par)
@@ -688,17 +740,18 @@ cjs_PNIfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_PNI)
 
 #What to do about first obs??
 MAPE_cjs_PNI<- mean(abs((cjs_PNIfilter$f-logit.s_cjs)/logit.s_cjs))
-#Root mean square error
-rmse_cjs_PNI<- rmse(logit.s_cjs, cjs_PNIfilter$f)
 
-loglik_cjs_PNI <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=PNI_z, addInt=FALSE))
+#Root mean square error
+rmse_cjs_PNI<- sqrt(mean(na.omit((cjs_PNIfilter$f - logit.s_cjs)^2)))
+
+loglik_cjs_PNI <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=PNI_z, addInt=FALSE))
 
 Href_cjs_PNI<- 2*(loglik_cjs_ref - loglik_cjs_PNI)
 
 cjs.PNI.AICc <- (2 * (loglik_cjs_PNI)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)    
 
 #Add to model selection table
-mod_sel_df<- add_row(mod_sel_df, Covariate="Mean_PNI", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_PNI, RMSE=rmse_cjs_PNI, 
+mod_sel_df<- add_row(mod_sel_df, Covariate="Mean_PNI", Model="Constant", Data="Multivariate", MAPE=MAPE_cjs_PNI, RMSE=rmse_cjs_PNI, 
                      Href=Href_cjs_PNI, AICc=cjs.PNI.AICc)
 
 #Assess Goodness of fit
@@ -724,14 +777,18 @@ hist(resids_PNI)
 ############################
 ###########################################
 buildFun_cjs_SST_pre<- function(parm){
-  mod_cjs_SST_pre<- dlmModPoly(2) + dlmModReg(X=SST_pre_z, addInt=FALSE)
-  V(mod_cjs_SST_pre)<- exp(parm[1])
-  diag(W(mod_cjs_SST_pre))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_SST_pre)
+  mod_SST_pre<- dlmModPoly(1) + dlmModReg(X=SST_pre_z, addInt=FALSE)
+  mod_SST_pre$FF <- mod_SST_pre$FF %x% diag(3)
+  mod_SST_pre$GG <- mod_SST_pre$GG %x% diag(3)
+  mod_SST_pre$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_SST_pre$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_SST_pre$m0 <- rep(0, 9)
+  mod_SST_pre$C0 <- diag(9) * 0
+  return(mod_SST_pre)
   
 }
 
-fit_cjs_SST_pre<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_SST_pre, hessian=TRUE)
+fit_cjs_SST_pre<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_SST_pre, hessian=TRUE)
 conv_cjs_SST_pre<- fit_cjs_SST_pre$convergence
 
 dlmLogits_cjs_SST_pre<- buildFun_cjs_SST_pre(fit_cjs_SST_pre$par)
@@ -745,15 +802,15 @@ mod_cjs_SST_pre<- buildFun_cjs_SST_pre(fit_cjs_SST_pre$par)
 cjs_SST_prefilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_SST_pre)
 
 #What to do about first obs??
-MAPE_cjs_SST_pre<- mean(abs((cjs_SST_prefilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_SST_pre<- mean(na.omit(abs((cjs_SST_prefilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_SST_pre<- rmse(logit.s_cjs, cjs_SST_prefilter$f)
+rmse_cjs_SST_pre<- sqrt(mean(na.omit((cjs_SST_prefilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_SST_pre <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=SST_pre_z, addInt=FALSE))
+loglik_cjs_SST_pre <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=SST_pre_z, addInt=FALSE))
 
-Href_cjs_SST_pre<- 2*(loglik_cjs_ref - loglik_cjs_temp)
+Href_cjs_SST_pre<- 2*(loglik_cjs_ref - loglik_cjs_SST_pre)
 
-cjs.SST_pre.AICc <- (2 * (loglik_cjs_temp)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)  
+cjs.SST_pre.AICc <- (2 * (loglik_cjs_SST_pre)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef)) + 2 * (sum(n.coef))+((2*n.coef*(n.coef+1))/length(logit.s_cjs)- n.coef-1)  
 
 #Add to model selection table
 mod_sel_df<- add_row(mod_sel_df, Covariate="Pre Entry SST", Model="LinTrend", Data="CJS", MAPE=MAPE_cjs_SST_pre, RMSE=rmse_cjs_SST_pre, 
@@ -781,14 +838,18 @@ hist(resids_SST_pre)
 
 ###########################################
 buildFun_cjs_SST_entry<- function(parm){
-  mod_cjs_SST_entry<- dlmModPoly(2) + dlmModReg(X=SST_entry_z, addInt=FALSE)
-  V(mod_cjs_SST_entry)<- exp(parm[1])
-  diag(W(mod_cjs_SST_entry))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_SST_entry)
+  mod_SST_entry<- dlmModPoly(1) + dlmModReg(X=SST_entry_z, addInt=FALSE)
+  mod_SST_entry$FF <- mod_SST_entry$FF %x% diag(3)
+  mod_SST_entry$GG <- mod_SST_entry$GG %x% diag(3)
+  mod_SST_entry$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_SST_entry$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_SST_entry$m0 <- rep(0, 9)
+  mod_SST_entry$C0 <- diag(9) * 0
+  return(mod_SST_entry)
   
 }
 
-fit_cjs_SST_entry<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_SST_entry, hessian=TRUE)
+fit_cjs_SST_entry<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_SST_entry, hessian=TRUE)
 conv_cjs_SST_entry<- fit_cjs_SST_entry$convergence
 
 dlmLogits_cjs_SST_entry<- buildFun_cjs_SST_entry(fit_cjs_SST_entry$par)
@@ -802,11 +863,11 @@ mod_cjs_SST_entry<- buildFun_cjs_SST_entry(fit_cjs_SST_entry$par)
 cjs_SST_entryfilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_SST_entry)
 
 #What to do about first obs??
-MAPE_cjs_SST_entry<- mean(abs((cjs_SST_entryfilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_SST_entry<- mean(na.omit(abs((cjs_SST_entryfilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_SST_entry<- rmse(logit.s_cjs, cjs_SST_entryfilter$f)
+rmse_cjs_SST_entry<- sqrt(mean(na.omit((cjs_SST_entryfilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_SST_entry <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=SST_entry_z, addInt=FALSE))
+loglik_cjs_SST_entry <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=SST_entry_z, addInt=FALSE))
 
 Href_cjs_SST_entry<- 2*(loglik_cjs_ref - loglik_cjs_SST_entry)
 
@@ -838,14 +899,18 @@ hist(resids_SST_entry)
 
 ###########################################
 buildFun_cjs_SST_6mo<- function(parm){
-  mod_cjs_SST_6mo<- dlmModPoly(2) + dlmModReg(X=SST_6mo_z, addInt=FALSE)
-  V(mod_cjs_SST_6mo)<- exp(parm[1])
-  diag(W(mod_cjs_SST_6mo))[1:3]<- exp(parm[2:4])
-  return(mod_cjs_SST_6mo)
+  mod_SST_6mo<- dlmModPoly(1) + dlmModReg(X=SST_6mo_z, addInt=FALSE)
+  mod_SST_6mo$FF <- mod_SST_6mo$FF %x% diag(3)
+  mod_SST_6mo$GG <- mod_SST_6mo$GG %x% diag(3)
+  mod_SST_6mo$V<- diag(c(exp(parm[1]), exp(parm[2]), exp(parm[3])))
+  mod_SST_6mo$W  <- diag(c(exp(parm[4]), exp(parm[5]), exp(parm[6]), exp(parm[7]), exp(parm[8]), exp(parm[9])))
+  mod_SST_6mo$m0 <- rep(0, 9)
+  mod_SST_6mo$C0 <- diag(9) * 0
+  return(mod_SST_6mo)
   
 }
 
-fit_cjs_SST_6mo<- dlmMLE(logit.s_cjs, parm = rep(0,4), build=buildFun_cjs_SST_6mo, hessian=TRUE)
+fit_cjs_SST_6mo<- dlmMLE(logit.s_cjs, parm = rep(0,9), build=buildFun_cjs_SST_6mo, hessian=TRUE)
 conv_cjs_SST_6mo<- fit_cjs_SST_6mo$convergence
 
 dlmLogits_cjs_SST_6mo<- buildFun_cjs_SST_6mo(fit_cjs_SST_6mo$par)
@@ -859,11 +924,11 @@ mod_cjs_SST_6mo<- buildFun_cjs_SST_6mo(fit_cjs_SST_6mo$par)
 cjs_SST_6mofilter<- dlmFilter(logit.s_cjs, mod=mod_cjs_SST_6mo)
 
 #What to do about first obs??
-MAPE_cjs_SST_6mo<- mean(abs((cjs_SST_6mofilter$f-logit.s_cjs)/logit.s_cjs))
+MAPE_cjs_SST_6mo<- mean(na.omit(abs((cjs_SST_6mofilter$f-logit.s_cjs)/logit.s_cjs)))
 #Root mean square error
-rmse_cjs_SST_6mo<- rmse(logit.s_cjs, cjs_SST_6mofilter$f)
+rmse_cjs_SST_6mo<- sqrt(mean(na.omit((cjs_SST_6mofilter$f - logit.s_cjs)^2)))
 
-loglik_cjs_SST_6mo <- dlmLL(logit.s_cjs, dlmModPoly(2) + dlmModReg(X=SST_6mo_z, addInt=FALSE))
+loglik_cjs_SST_6mo <- dlmLL(logit.s_cjs, dlmModPoly(1) + dlmModReg(X=SST_6mo_z, addInt=FALSE))
 
 Href_cjs_SST_6mo<- 2*(loglik_cjs_ref - loglik_cjs_SST_6mo)
 

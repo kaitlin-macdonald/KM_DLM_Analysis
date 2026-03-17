@@ -289,7 +289,7 @@ ggplot(df_mldno3 %>% filter(month==4), aes(x = year, y = month.mean)) +
 
 ```{r LWG Outflow_data}
 
-Outflow <- read.csv(here( "LWG_Outflow.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date))
+Outflow <- read.csv(here( "data/LWG_Outflow.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date))
 
 df_outflow<- Outflow %>% group_by(month, Year) %>% summarise(mean.out=mean(value))
 
@@ -307,7 +307,7 @@ ggplot(df_outflow %>% filter(month==4), aes(x = Year, y = mean.out)) +
 
 ```{r LWG Temperature_data}
 #Temperature not recorded during first weeks of march
-Temperature <- read.csv(here( "LWG_Temp.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date)) %>% filter(!is.na(value))
+Temperature <- read.csv(here( "data/LWG_Temp.csv")) %>% mutate(month_date=format(as.Date(paste0(mm.dd,'-',year), "%m-%d-%Y"))) %>% mutate(month=month(month_date), Year=year(month_date)) %>% filter(!is.na(value))
 
 #Get monthly means and filter out March because daily means not available for all of march
 df_temp<- Temperature %>% group_by(month, Year) %>% summarise(mean.temp=mean(value)) %>% filter(month!=3)
@@ -324,9 +324,23 @@ ggplot(df_temp %>% filter(month==4), aes(x = Year, y = mean.temp)) +
 ```
 
 ```{r PNI_data}
-PNI <- read.csv(here( "pni_data.csv")) %>% select(Year, Annual.PNI) %>% rename(year=Year)
+PNI <- read.csv(here( "data/pni_data.csv")) %>% select(Year, Annual.PNI) %>% rename(year=Year)
 ```
 
+```{r SSTarc_data}
+url<- "https://cbr.washington.edu/dart/cs/php/rpt/basin_scale_indices.php?sc=1&outputFormat=csv&indices=sstarc&syear=All&eyear=All"
+dat_SST<- read.csv(url) %>% filter(complete.cases(.))
+
+SST_prev <- dat_SST %>%
+  group_by(Start.Month) %>% # Group by ID to compare within the same ID
+  arrange(Year) %>% # Sort by year to ensure correct lag calculation
+  mutate(Previous_Year_Value = lag(Value, n = 1), year=as.integer(Year)) %>%
+  ungroup() %>% mutate(SST=ifelse(Start.Month==12, Previous_Year_Value, Value)) %>% select(-Year)
+
+SST_pre1212<- SST_prev %>% filter(Start.Month %in% c(12, 1, 2)) %>% group_by(year) %>%  summarise(SST_pre1212=mean(SST))
+SST_entry567<- SST_prev %>% filter(Start.Month %in% c(5, 6, 7)) %>% group_by(year) %>% summarise(SST_entry567=mean(SST))
+SST_6mo<- SST_prev %>% filter(Start.Month %in% c(12, 1, 2, 3, 4, 5)) %>% group_by(year) %>% summarise(SST_6mo=mean(SST))
+```
 # SAR methods
 All sar datasets have an additional blank logit.s year for ahead forecast in shiny app. 
 
@@ -342,21 +356,16 @@ data(SalmonSurvCUI, package = "MARSS")
 
 
 sar_raw_data <- SalmonSurvCUI %>% 
-  mutate(#index = "CUI",
-         sar.method = "Scheuerell and Williams (2005)") %>% 
- # rename("value" = CUI.apr) %>% 
+  rename(SW_logit_phi=logit.s) %>% 
   mutate(year = as.numeric(year)) %>% 
-  left_join(df_cui, by = c("year")) %>% 
-  select(-CUI.apr) %>% 
-        add_row(year = max(.$year)+1, logit.s = NA, sar.method = "Scheuerell and Williams (2005)", Apr = NA, Sep=NA, Oct=NA)   #add 2006 NA row for ahead forecast
-
+  select(-CUI.apr)
 
 
 #join with CUTI data only (others do not have enough older years overlap), includes NA for 2006
-sar_raw_data_CUI_CUTI<-sar_raw_data %>% 
-  left_join(df_cuti, by = "year") %>% 
-  bind_rows(sar_raw_data) %>% 
-  mutate( reach = "LGR_LGA")
+#sar_raw_data_CUI_CUTI<-sar_raw_data %>% 
+#  left_join(df_cuti, by = "year") %>% 
+#  bind_rows(sar_raw_data) %>% 
+#  mutate( reach = "LGR_LGA")
 
 ```
 
@@ -374,7 +383,7 @@ To generate CBR sar data, used https://www.cbr.washington.edu/dart/query/pit_sar
 ```{r load_LGRLGA_dart_sar_data}
 #generated new file 1/13/25 with updated years of sar (2000 to 2021) changed values from previous `LGRtoLGA_allpass_W_spsu_ch.csv` file (added 2000-2001; updated 2021 sar values)
 
-load(here( "LGRLGA_allpassage_wild_spsu_chinook.rda"))
+load(here( "data/LGRLGA_allpassage_wild_spsu_chinook.rda"))
 df.cbr.raw<- LGRLGA_allpassage_wild_spsu_chinook %>% 
   drop_na() %>% 
   select(year, meanSAR) %>% #drop CBR notes and NA values
@@ -382,11 +391,11 @@ df.cbr.raw<- LGRLGA_allpassage_wild_spsu_chinook %>%
 
 # must divide meanSAR /100 to get 0 to 1 and then apply logit/transform since DART sar calculated as adultCount/juvCount*100
 df.cbr<-df.cbr.raw %>% 
-  mutate(logit.s = qlogis(meanSAR/100)) %>% #
-  select(-meanSAR) %>%
-  mutate(sar.method = "DART",
-         reach = "LGR_LGA") %>% 
-  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "DART", reach = "LGR_LGA") #add next year with NA
+  mutate(SAR_logit_phi = qlogis(meanSAR/100)) %>% #
+  select(-meanSAR)
+ # mutate(sar.method = "DART",
+#         reach = "LGR_LGA") %>% 
+#  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "DART", reach = "LGR_LGA") #add next year with NA
 
 
 #CBR SAR + April data
@@ -443,21 +452,22 @@ sar_raw_data<-rbind(sar_raw_data, df.cbr)
 
 ```{r load_LGRLGA_cjs_sar_data}
 
-df_cjs_raw<-read_csv(here( "lgr.lga.surv.yr.1994.2021_250309.csv")) 
+df_cjs_raw<-read_csv(here( "data/lgr.lga.surv.yr.1994.2021_250309.csv")) 
 df_cjs_raw <- df_cjs_raw[-1]
 
 
 df.cjs <- df_cjs_raw %>% 
-  mutate(logit.s = qlogis(LGR_LGA_SAR)) %>% 
-  select(-LGR_LGA_SAR) %>% 
-  mutate(sar.method = "CJS", 
-         reach = "LGR_LGA") %>% 
-  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "CJS", reach = "LGR_LGA") #add 2020 with NA
+  mutate(cjs_logit_phi = qlogis(LGR_LGA_SAR)) %>% 
+  select(-LGR_LGA_SAR) 
+ # mutate(sar.method = "CJS", 
+#         reach = "LGR_LGA") %>% 
+#  add_row(year = max(.$year)+1, logit.s = NA, sar.method = "CJS", reach = "LGR_LGA") #add 2020 with NA
 
-df.cjs.LGRLGA.apr<-df.cjs %>% inner_join(df_cui_apr, by = "year")  %>% inner_join(df_cuti_apr, by = "year") %>% inner_join(df_beuti_apr, by = "year")  %>% inner_join(df_mldno3_apr, by = "year")  %>% inner_join(df_outflow_apr, by = "year")  %>% inner_join(df_temp_apr, by = "year")  %>% inner_join(PNI, by = "year") %>% inner_join(df_cui_mean, by = "year") %>% inner_join(df_cuti_mean, by = "year")  %>% inner_join(df_beuti_mean, by = "year")  %>% inner_join(df_mldno3_mean, by = "year")
+df_SAR_LGRLGA_MV<-sar_raw_data %>% full_join(df.cbr, by="year") %>%  full_join(df.cjs, by="year") %>% left_join(df_cui_apr, by = "year")  %>% left_join(df_cuti_apr, by = "year") %>% left_join(df_beuti_apr, by = "year")  %>% left_join(df_mldno3_apr, by = "year")  %>% left_join(df_outflow_apr, by = "year")  %>% left_join(df_temp_apr, by = "year")  %>% left_join(PNI, by = "year") %>% left_join(df_cui_mean, by = "year") %>% left_join(df_cuti_mean, by = "year")  %>% left_join(df_beuti_mean, by = "year")  %>% left_join(df_mldno3_mean, by = "year") %>% left_join(SST_pre1212, by = "year") %>% left_join(SST_entry567, by = "year") %>% left_join(SST_6mo, by = "year") %>% 
+  select(-c(month.x, month.y, month))
 
 #Save LGRLGA CJS data
-saveRDS(df.cjs.LGRLGA.apr, "df_cjs_LGRLGA_apr.rds")
+saveRDS(df_SAR_LGRLGA_MV, "df_SAR_LGRLGA_MV.rds")
 ```
 
 ```{r load_BONBOA_cjs_sar_data}
