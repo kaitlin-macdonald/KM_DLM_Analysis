@@ -1,0 +1,58 @@
+---
+title: "Marine DFA"
+author: "Kaitlin Macdonald"
+date: "2026-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+```
+
+## Marine DFA Results
+
+The covariates included in the DFA were CUI, CUTI, BEUTI, April mixed-layer depth nitrate, and the 6-month average sea surface temperature.
+
+```{r}
+rm(list = ls())
+
+library(dlm)
+library(dplyr)
+library(here)
+library(Metrics)
+library(MARSS)
+library(bayesdfa)
+library(rstan)
+library(bayesplot)
+
+setwd("~/CBR/DLM_Analysis_Git")
+
+cjs_raw<- readRDS("data/df_SAR_LGRLGA_MV.rds") 
+#Remove NA at end of time series
+Marine<- cjs_raw %>% select("CUI", "CUTI", "BEUTI", "Apr.mldno3", "SST_6mo")
+Freshwater<- cjs_raw %>% select("mean.temp", "Annual.PNI", "mean.out")
+dfa.marine.mat<- t(Marine)
+dfa.freshwater.mat<- t(Freshwater)
+cor.marine.dfa<- cor(Marine)
+
+```
+
+
+Plotted is the resulting trend 
+
+```{r} 
+
+fit.marine1<- readRDS("~/CBR/DLM_Analysis_Git/marine1_DFA.rds")
+Marine1_trends<- readRDS( "~/CBR/DLM_Analysis_Git/marine1_trend.rds")
+rotated.marine1<- rotate_trends(fit.marine1)
+plot_trends(rotated.marine1, years=cjs_raw$year)
+```
+
+Shown are the loadings for each marine covariate
+
+```{r}
+plot_loadings(rotated.marine1, names=names(Marine))
+dfa_loadings(rotated.marine1, summary=TRUE, names=names(Marine))
+
+```
+
