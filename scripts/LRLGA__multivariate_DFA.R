@@ -10,7 +10,7 @@ library(ggplot2)
 setwd("~/CBR/DLM_Analysis_Git")
 
 #Read in data
-cjs_raw<- readRDS("data/df_SAR_LGRLGA_MV_old.rds") 
+cjs_raw<- readRDS("data/df_SAR_LGRLGA_MV_old.rds")  |> select(-mean.temp)
 
 #Plot the data
 data_SAR<- ggplot(cjs_raw, aes(x=year, y=plogis(SW_logit_phi))) + geom_point() + geom_line() + 
@@ -25,9 +25,12 @@ swepeak<- read.csv("data/swepeak.csv") %>% select(year, day, sum, mean)
 
 mean_spill<- readRDS("data/mean_spill.rds") %>% mutate(year=as.double(year))
 
+full_temp<- readRDS("data/Updated_temp_Jul26.rds") |> mutate(year=as.double(Year))
+
 cjs_raw$M1<- marine1$estimate
 
-cjs<- cjs_raw %>% left_join(swepeak, by="year") %>% left_join(mean_spill, by="year") %>% filter(year>=1979)
+cjs<- cjs_raw %>% left_join(swepeak, by="year") %>% left_join(mean_spill, by="year") %>% left_join(full_temp,  by="year") |> 
+ filter(year>=1985)
 
 
 #Remove NA at end of time series
@@ -668,6 +671,74 @@ AICcoutflow<- 2*outflow_LL + 2*dlm_outflow$num.params + ((2*dlm_outflow$num.para
 mod_sel_df<- add_row(mod_sel_df, Covariate="outflow", Model="Constant", Data="Multi", MAPE=MAPE_outflow, RMSE=rmse_outflow, 
                      Href=Href_cjs_outflow, LL=outflow_LL, AICc=AICcoutflow)
 
+#################################
+## Temperature
+m=2
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- temp_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1) ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_temp <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.temp <- MARSSkfss(dlm_temp)
+
+#Get forecasted predictions
+eta.temp <- kf.temp$xtt1
+
+## ts of E(forecasts)
+fore_temp <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_temp[, t] <- Z[, , t] %*% eta.temp[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.marine1 <- kf.marine1$Vtt1
+
+## obs variance; 1x1 matrix
+#R_marine1 <- coef(dlm_marine1, type = "matrix")$R
+
+## ts of Var(forecasts)
+#marine1_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  marine1_var[t] <- Z[, , t] %*% Phi.marine1[, , t] %*% tZ + R_marine1
+#}
+
+sig.lik.temp<- sum(log(abs(kf.temp$Sigma[1,1,]))) +  sum(log(abs(kf.temp$Sigma[2,2,]))) +  sum(log(abs(kf.temp$Sigma[3,3,])))
+innov.lik.temp<- (1/2)*(sum((kf.temp$Innov[1,]^2)/kf.temp$Sigma[1,1,]) + sum((kf.temp$Innov[2,]^2)/kf.temp$Sigma[2,2,])+ sum((kf.temp$Innov[3,]^2)/kf.temp$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+temp_LL<- pie + sig.lik.temp +innov.lik.temp
+
+#What to do about first obs??
+MAPE_temp<- mean(abs((fore_temp-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_temp<- sqrt(mean((SAR - fore_temp)^2, na.rm = TRUE))
+
+Href_cjs_temp<- 2*(constant_LL - temp_LL)
+
+AICcTemp<- 2*temp_LL + 2*dlm_temp$num.params + ((2*dlm_temp$num.params*(dlm_temp$num.params+1))/(TT-dlm_temp$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="Temperature", Model="Constant", Data="Multi", MAPE=MAPE_temp, RMSE=rmse_temp, 
+                     Href=Href_cjs_temp, LL=temp_LL, AICc=AICcTemp)
+
 
 #################################
 ## Marine Trend
@@ -875,6 +946,219 @@ mod_sel_df<- add_row(mod_sel_df, Covariate="peak", Model="Constant", Data="Multi
 
 
 #################################
+## Marine trend + Peak day + temp
+m=4
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2", "q.beta3")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- marine1_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- peak_day_z  ## Nx1; predictor variable
+Z[1:n, 4, ] <- temp_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_pkMtemp <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.pkMtemp <- MARSSkfss(dlm_pkMtemp)
+
+#Get forecasted predictions
+eta.pkMtemp <- kf.pkMtemp$xtt1
+
+## ts of E(forecasts)
+fore_pkMtemp <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_pkMtemp[, t] <- Z[, , t] %*% eta.pkMtemp[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.pkMtemp<- sum(log(abs(kf.pkMtemp$Sigma[1,1,]))) +  sum(log(abs(kf.pkMtemp$Sigma[2,2,]))) +  sum(log(abs(kf.pkMtemp$Sigma[3,3,])))
+innov.lik.pkMtemp<- (1/2)*(sum((kf.pkMtemp$Innov[1,]^2)/kf.pkMtemp$Sigma[1,1,]) + sum((kf.pkMtemp$Innov[2,]^2)/kf.pkMtemp$Sigma[2,2,])+ sum((kf.pkMtemp$Innov[3,]^2)/kf.pkMtemp$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+pkMtemp_LL<- pie + sig.lik.pkMtemp +innov.lik.pkMtemp
+
+#What to do about first obs??
+MAPE_pkMtemp<- mean(abs((fore_pkMtemp-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_pkMtemp<- sqrt(mean((SAR - fore_pkMtemp)^2, na.rm = TRUE))
+
+Href_cjs_pkMtemp<- 2*(constant_LL - pkMtemp_LL)
+
+AICcpkMtemp<- 2*pkMtemp_LL + 2*dlm_pkMtemp$num.params + ((2*dlm_pkMtemp$num.params*(dlm_pkMtemp$num.params+1))/(TT-dlm_pkMtemp$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="PkDay_Temp_Marine", Model="Constant", Data="Multi", MAPE=MAPE_pkMtemp, RMSE=rmse_pkMtemp, 
+                     Href=Href_cjs_pkMtemp, LL=pkMtemp_LL, AICc=AICcpkMtemp)
+
+#################################
+## Marine trend + Peak day 
+m=3
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- marine1_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- peak_day_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_pkM <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.pkM <- MARSSkfss(dlm_pkM)
+
+#Get forecasted predictions
+eta.pkM <- kf.pkM$xtt1
+
+## ts of E(forecasts)
+fore_pkM <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_pkM[, t] <- Z[, , t] %*% eta.pkM[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.pkM<- sum(log(abs(kf.pkM$Sigma[1,1,]))) +  sum(log(abs(kf.pkM$Sigma[2,2,]))) +  sum(log(abs(kf.pkM$Sigma[3,3,])))
+innov.lik.pkM<- (1/2)*(sum((kf.pkM$Innov[1,]^2)/kf.pkM$Sigma[1,1,]) + sum((kf.pkM$Innov[2,]^2)/kf.pkM$Sigma[2,2,])+ sum((kf.pkM$Innov[3,]^2)/kf.pkM$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+pkM_LL<- pie + sig.lik.pkM +innov.lik.pkM
+
+#What to do about first obs??
+MAPE_pkM<- mean(abs((fore_pkM-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_pkM<- sqrt(mean((SAR - fore_pkM)^2, na.rm = TRUE))
+
+Href_cjs_pkM<- 2*(constant_LL - pkM_LL)
+
+AICcpkM<- 2*pkM_LL + 2*dlm_pkM$num.params + ((2*dlm_pkM$num.params*(dlm_pkM$num.params+1))/(TT-dlm_pkM$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="PkDay_Marine", Model="Constant", Data="Multi", MAPE=MAPE_pkM, RMSE=rmse_pkM, 
+                     Href=Href_cjs_pkM, LL=pkM_LL, AICc=AICcpkM)
+
+#################################
+## Marine trend + temp
+m=3
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- marine1_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- temp_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_Mtemp <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.Mtemp <- MARSSkfss(dlm_Mtemp)
+
+#Get forecasted predictions
+eta.Mtemp <- kf.Mtemp$xtt1
+
+## ts of E(forecasts)
+fore_Mtemp <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_Mtemp[, t] <- Z[, , t] %*% eta.Mtemp[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.Mtemp<- sum(log(abs(kf.Mtemp$Sigma[1,1,]))) +  sum(log(abs(kf.Mtemp$Sigma[2,2,]))) +  sum(log(abs(kf.Mtemp$Sigma[3,3,])))
+innov.lik.Mtemp<- (1/2)*(sum((kf.Mtemp$Innov[1,]^2)/kf.Mtemp$Sigma[1,1,]) + sum((kf.Mtemp$Innov[2,]^2)/kf.Mtemp$Sigma[2,2,])+ sum((kf.Mtemp$Innov[3,]^2)/kf.Mtemp$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+Mtemp_LL<- pie + sig.lik.Mtemp +innov.lik.Mtemp
+
+#What to do about first obs??
+MAPE_Mtemp<- mean(abs((fore_Mtemp-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_Mtemp<- sqrt(mean((SAR - fore_Mtemp)^2, na.rm = TRUE))
+
+Href_cjs_Mtemp<- 2*(constant_LL - Mtemp_LL)
+
+AICcMtemp<- 2*Mtemp_LL + 2*dlm_Mtemp$num.params + ((2*dlm_Mtemp$num.params*(dlm_Mtemp$num.params+1))/(TT-dlm_Mtemp$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="Temp_Marine", Model="Constant", Data="Multi", MAPE=MAPE_Mtemp, RMSE=rmse_Mtemp, 
+                     Href=Href_cjs_Mtemp, LL=Mtemp_LL, AICc=AICcMtemp)
+
+
+
+##########################################################################################################
 ## Marine trend + Pacific Northwest Index
 m=3
 
@@ -1084,6 +1368,217 @@ AICcoutCUI<- 2*outCUI_LL + 2*dlm_outCUI$num.params + ((2*dlm_outCUI$num.params*(
 mod_sel_df<- add_row(mod_sel_df, Covariate="out_CUI", Model="Constant", Data="Multi", MAPE=MAPE_outCUI, RMSE=rmse_outCUI, 
                      Href=Href_cjs_outCUI, LL=outCUI_LL, AICc=AICcoutCUI)
 
+#################################
+## CUI + Peak day + temp
+m=3
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- CUI_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- peak_day_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_pkCUI <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.pkCUI <- MARSSkfss(dlm_pkCUI)
+
+#Get forecasted predictions
+eta.pkCUI <- kf.pkCUI$xtt1
+
+## ts of E(forecasts)
+fore_pkCUI <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_pkCUI[, t] <- Z[, , t] %*% eta.pkCUI[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.pkCUI<- sum(log(abs(kf.pkCUI$Sigma[1,1,]))) +  sum(log(abs(kf.pkCUI$Sigma[2,2,]))) +  sum(log(abs(kf.pkCUI$Sigma[3,3,])))
+innov.lik.pkCUI<- (1/2)*(sum((kf.pkCUI$Innov[1,]^2)/kf.pkCUI$Sigma[1,1,]) + sum((kf.pkCUI$Innov[2,]^2)/kf.pkCUI$Sigma[2,2,])+ sum((kf.pkCUI$Innov[3,]^2)/kf.pkCUI$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+pkCUI_LL<- pie + sig.lik.pkCUI +innov.lik.pkCUI
+
+#What to do about first obs??
+MAPE_pkCUI<- mean(abs((fore_pkCUI-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_pkCUI<- sqrt(mean((SAR - fore_pkCUI)^2, na.rm = TRUE))
+
+Href_cjs_pkCUI<- 2*(constant_LL - pkCUI_LL)
+
+AICcpkCUI<- 2*pkCUI_LL + 2*dlm_pkCUI$num.params + ((2*dlm_pkCUI$num.params*(dlm_pkCUI$num.params+1))/(TT-dlm_pkCUI$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="PkDay_CUI", Model="Constant", Data="Multi", MAPE=MAPE_pkCUI, RMSE=rmse_pkCUI, 
+                     Href=Href_cjs_pkCUI, LL=pkCUI_LL, AICc=AICcpkCUI)
+
+#################################
+## CUI + temp
+m=3
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- CUI_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- temp_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_CUItemp <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.CUItemp <- MARSSkfss(dlm_CUItemp)
+
+#Get forecasted predictions
+eta.CUItemp <- kf.CUItemp$xtt1
+
+## ts of E(forecasts)
+fore_CUItemp <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_CUItemp[, t] <- Z[, , t] %*% eta.CUItemp[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.CUItemp<- sum(log(abs(kf.CUItemp$Sigma[1,1,]))) +  sum(log(abs(kf.CUItemp$Sigma[2,2,]))) +  sum(log(abs(kf.CUItemp$Sigma[3,3,])))
+innov.lik.CUItemp<- (1/2)*(sum((kf.CUItemp$Innov[1,]^2)/kf.CUItemp$Sigma[1,1,]) + sum((kf.CUItemp$Innov[2,]^2)/kf.CUItemp$Sigma[2,2,])+ sum((kf.CUItemp$Innov[3,]^2)/kf.CUItemp$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+CUItemp_LL<- pie + sig.lik.CUItemp +innov.lik.CUItemp
+
+#What to do about first obs??
+MAPE_CUItemp<- mean(abs((fore_CUItemp-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_CUItemp<- sqrt(mean((SAR - fore_CUItemp)^2, na.rm = TRUE))
+
+Href_cjs_CUItemp<- 2*(constant_LL - CUItemp_LL)
+
+AICcCUItemp<- 2*CUItemp_LL + 2*dlm_CUItemp$num.params + ((2*dlm_CUItemp$num.params*(dlm_CUItemp$num.params+1))/(TT-dlm_CUItemp$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="Temp_CUI", Model="Constant", Data="Multi", MAPE=MAPE_CUItemp, RMSE=rmse_CUItemp, 
+                     Href=Href_cjs_CUItemp, LL=CUItemp_LL, AICc=AICcCUItemp)
+
+
+#################################
+## CUI + Peak day + temp
+m=4
+
+## for process eqn
+B <- diag(m)  ## 2x2; Identity; this is the parameter evolution matrix (G)
+U <- matrix(0, nrow = m, ncol = 1)  ## 2x1; both elements = 0; 
+Q <- matrix(list(0), m, m)  ## 2x2; all 0 for now; this is the variance-covariance matrix
+diag(Q) <- c("q.alpha", "q.beta1", "q.beta2", "q.beta3")#, "q.beta3")  ## 2x2; diag = (q1,q2)
+
+## for observation eqn
+Z <- array(NA, c(n, m, TT))  ## NxMxT; empty for now; matrix of predictor parameter coefficients
+Z[1:n, 1, ] <- rep(1, TT)  ## Nx1; 1's for intercept
+Z[1:n, 2, ] <- CUI_z  ## Nx1; predictor variable
+Z[1:n, 3, ] <- peak_day_z  ## Nx1; predictor variable
+Z[1:n, 4, ] <- temp_z  ## Nx1; predictor variable
+A <- matrix(c(0,0,0), ncol=1)  ## 1x1; scalar = 0; 
+
+
+## only need starting values for regr parameters
+inits_list <- list(x0 = matrix(c(0, 0, 0, 0), nrow = m))
+
+## list of model matrices & vectors
+mod_list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = "diagonal and unequal")
+
+## fit univariate DLM
+dlm_pkCUItemp <- MARSS(logit.s_cjs, inits = inits_list, model = mod_list, method="TMB")
+
+kf.pkCUItemp <- MARSSkfss(dlm_pkCUItemp)
+
+#Get forecasted predictions
+eta.pkCUItemp <- kf.pkCUItemp$xtt1
+
+## ts of E(forecasts)
+fore_pkCUItemp <- matrix(NA, nrow=n, ncol=TT)
+for (t in 1:TT) {
+  fore_pkCUItemp[, t] <- Z[, , t] %*% eta.pkCUItemp[, t, drop = FALSE]
+}
+
+## variance of regr parameters; 1x2xT array
+#Phi.PNIM <- kf.PNIM$Vtt1
+
+## obs variance; 1x1 matrix
+#R_PNIM <- coef(dlm_PNIM, type = "matrix")$R
+
+## ts of Var(forecasts)
+#PNIM_var <- vector()
+#for (t in 1:TT) {
+#  tZ <- matrix(Z[, , t], m, 1)  ## transpose of Z
+#  PNIM_var[t] <- Z[, , t] %*% Phi.PNIM[, , t] %*% tZ + R_PNIM
+#}
+
+sig.lik.pkCUItemp<- sum(log(abs(kf.pkCUItemp$Sigma[1,1,]))) +  sum(log(abs(kf.pkCUItemp$Sigma[2,2,]))) +  sum(log(abs(kf.pkCUItemp$Sigma[3,3,])))
+innov.lik.pkCUItemp<- (1/2)*(sum((kf.pkCUItemp$Innov[1,]^2)/kf.pkCUItemp$Sigma[1,1,]) + sum((kf.pkCUItemp$Innov[2,]^2)/kf.pkCUItemp$Sigma[2,2,])+ sum((kf.pkCUItemp$Innov[3,]^2)/kf.pkCUItemp$Sigma[3,3,]))
+pie<- (TT/2)*log(2*pi)
+
+
+pkCUItemp_LL<- pie + sig.lik.pkCUItemp +innov.lik.pkCUItemp
+
+#What to do about first obs??
+MAPE_pkCUItemp<- mean(abs((fore_pkCUItemp-SAR)/SAR), na.rm=TRUE)
+#Root mean square error
+rmse_pkCUItemp<- sqrt(mean((SAR - fore_pkCUItemp)^2, na.rm = TRUE))
+
+Href_cjs_pkCUItemp<- 2*(constant_LL - pkCUItemp_LL)
+
+AICcpkCUItemp<- 2*pkCUItemp_LL + 2*dlm_pkCUItemp$num.params + ((2*dlm_pkCUItemp$num.params*(dlm_pkCUItemp$num.params+1))/(TT-dlm_pkCUItemp$num.params-1))
+
+mod_sel_df<- add_row(mod_sel_df, Covariate="PkDay_Temp_CUI", Model="Constant", Data="Multi", MAPE=MAPE_pkCUItemp, RMSE=rmse_pkCUItemp, 
+                     Href=Href_cjs_pkCUItemp, LL=pkCUItemp_LL, AICc=AICcpkCUItemp)
 
 ###################################################################################
 #linear trend
